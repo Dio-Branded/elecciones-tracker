@@ -18,4 +18,5 @@ data/ocr_cells/
 data/visual_audit_*.html
 data/ocr_pipeline_*.json
 data/suspect_report_*.html
+data/geo_cache.json
 logs/

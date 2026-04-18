@@ -31,7 +31,14 @@ from ocr_trocr import pdf_to_image
 PDF_DIR = Path(__file__).parent / "data" / "actas_pdfs"
 OUT_DIR = Path(__file__).parent / "data"
 CROPS_DIR = OUT_DIR / "audit_crops"
+GEO_CACHE_PATH = OUT_DIR / "geo_cache.json"
 ID_ELECCION = 10
+
+
+def load_geo_cache() -> dict:
+    if GEO_CACHE_PATH.exists():
+        return json.loads(GEO_CACHE_PATH.read_text(encoding="utf-8"))
+    return {}
 
 # Crop window for vote column (calibrated 2026-04-18 by visual inspection)
 # X: column "TOTAL DE VOTOS" is ~0.42..0.56 of image width
@@ -95,7 +102,7 @@ def prioritize(codigos: list[int], anomaly_hits: dict[int, list[dict]]):
 
 
 def render_mesa_block(codigo: int, hits: list[dict], conn, snap_id: int,
-                       nom_map: dict[int, str]) -> tuple[str, Path | None]:
+                       nom_map: dict[int, str], geo_cache: dict) -> tuple[str, Path | None]:
     """Genera un bloque HTML para una mesa. Guarda crop en CROPS_DIR."""
     padded = f"{codigo:06d}"
     pdf = find_pdf(codigo)
@@ -114,18 +121,25 @@ def render_mesa_block(codigo: int, hits: list[dict], conn, snap_id: int,
         except Exception as e:
             crop_path = None
 
-    # Raw JSON for local info
+    # Geo info: depart / prov / dist from geo_cache (enrich_geo.py), local from raw_json
+    geo = geo_cache.get(str(codigo), {})
     raw_row = conn.execute(
         "SELECT raw_json FROM actas WHERE snapshot_id=? AND codigo=? AND id_eleccion=10",
         (snap_id, codigo),
     ).fetchone()
-    ubic = ""
-    if raw_row and raw_row[0]:
+    local_name = geo.get("local") or ""
+    local_cod = geo.get("codigo_local") or ""
+    if not local_name and raw_row and raw_row[0]:
         try:
             d = json.loads(raw_row[0])
-            ubic = f"{d.get('nombreLocalVotacion','')} (local {d.get('codigoLocalVotacion','')})"
+            local_name = d.get("nombreLocalVotacion") or ""
+            local_cod = d.get("codigoLocalVotacion") or ""
         except Exception:
             pass
+    depart = geo.get("departamento") or ""
+    prov = geo.get("provincia") or ""
+    dist = geo.get("distrito") or ""
+    direccion = geo.get("direccion") or ""
 
     # API votes + totals
     votos = list(conn.execute(
@@ -146,8 +160,23 @@ def render_mesa_block(codigo: int, hits: list[dict], conn, snap_id: int,
 
     html = [f'<div class="card">']
     html.append(f'<h2>Mesa {padded}</h2>')
-    if ubic:
-        html.append(f'<div class="ubic">{ubic}</div>')
+    # Geographic info
+    geo_parts = []
+    if depart:
+        geo_parts.append(depart)
+    if prov and prov != depart:
+        geo_parts.append(prov)
+    if dist and dist != prov:
+        geo_parts.append(dist)
+    geo_line = " / ".join(geo_parts)
+    if geo_line:
+        html.append(f'<div class="geo">{geo_line}</div>')
+    if local_name:
+        html.append(f'<div class="ubic"><b>{local_name}</b>'
+                    + (f' <span class="local-code">(local {local_cod})</span>' if local_cod else '')
+                    + '</div>')
+    if direccion:
+        html.append(f'<div class="direccion">{direccion}</div>')
 
     # Anomaly tags
     html.append('<div class="tags">')
@@ -224,6 +253,7 @@ def main():
         (nsid,),
     )}
 
+    geo_cache = load_geo_cache()
     anomaly_hits = load_anomaly_hits()
     if args.codigo:
         codigos = [int(x) for x in args.codigo.split(",")]
@@ -250,7 +280,10 @@ h1{color:#58a6ff}
 .card.p3{border-left:5px solid #ffd33d}
 .card.p4{border-left:5px solid #8b949e}
 h2{color:#f0883e;margin:0 0 8px}
-.ubic{font-size:13px;color:#8b949e;margin-bottom:6px}
+.geo{font-size:13px;color:#3fb950;margin-bottom:3px;font-weight:bold}
+.ubic{font-size:13px;color:#c9d1d9;margin-bottom:3px}
+.local-code{color:#8b949e;font-weight:normal}
+.direccion{font-size:12px;color:#8b949e;margin-bottom:6px;font-style:italic}
 .tags{margin:6px 0 10px}
 .tag{background:#21262d;padding:3px 9px;border-radius:4px;font-size:11px;margin-right:6px;display:inline-block;margin-bottom:4px}
 .tag.surge{color:#f85149;background:#f8514922}
@@ -287,7 +320,7 @@ a{color:#58a6ff}
         if i % 20 == 0:
             print(f"  [{i}/{len(prioritized)}] procesando...")
         hits = anomaly_hits.get(codigo, [])
-        block, _ = render_mesa_block(codigo, hits, conn, snap_id, nom_map)
+        block, _ = render_mesa_block(codigo, hits, conn, snap_id, nom_map, geo_cache)
         # Inject priority class
         block = block.replace('<div class="card">', f'<div class="card p{pri}">', 1)
         parts.append(block)
