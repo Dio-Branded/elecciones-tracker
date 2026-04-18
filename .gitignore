@@ -13,4 +13,9 @@ data/dashboard_snapshot_*.json
 data/cross_validate_*.json
 data/validation_report_*.html
 data/actas_pdfs/
+data/audit_crops/
+data/ocr_cells/
+data/visual_audit_*.html
+data/ocr_pipeline_*.json
+data/suspect_report_*.html
 logs/
