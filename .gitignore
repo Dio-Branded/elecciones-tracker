@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+data/onpe.db
+data/onpe.db-journal
+data/onpe.db-wal
+data/onpe.db-shm
+data/prime_data.csv
+data/prime_crosscheck_*.json
+data/actas_analysis_*.json
+data/anomalies_report_*.json
+data/verify_prime_*.json
+data/dashboard_snapshot_*.json
+logs/

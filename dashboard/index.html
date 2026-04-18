@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Auditoría ONPE 2026 — Cruce nacional vs mesa por mesa</title>
+<meta name="description" content="Auditoría independiente que compara el total nacional publicado por ONPE contra la suma mesa por mesa. Datos públicos, metodología replicable.">
+<link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+<style>
+  body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:12px}
+  .card-red{border-color:#f8514988}
+  .card-green{border-color:#3fb95088}
+  .card-blue{border-color:#58a6ff88}
+  .badge-red{background:#f8514922;color:#f85149;border:1px solid #f8514944;border-radius:6px;padding:2px 8px;font-size:11px}
+  .badge-green{background:#3fb95022;color:#3fb950;border:1px solid #3fb95044;border-radius:6px;padding:2px 8px;font-size:11px}
+  .badge-blue{background:#58a6ff22;color:#58a6ff;border:1px solid #58a6ff44;border-radius:6px;padding:2px 8px;font-size:11px}
+  .badge-orange{background:#d2992222;color:#d29922;border:1px solid #d2992244;border-radius:6px;padding:2px 8px;font-size:11px}
+  .mono{font-family:'SF Mono',Monaco,Consolas,monospace}
+  table{border-collapse:collapse;width:100%}
+  th{background:#21262d;color:#58a6ff;text-align:left;padding:8px 10px;font-size:12px;font-weight:600}
+  td{padding:6px 10px;border-bottom:1px solid #21262d;font-size:13px}
+  tr:hover td{background:#1c2128}
+  .ratio-crit{background:#f8514922;color:#f85149;font-weight:bold}
+  .ratio-warn{background:#d2992222;color:#d29922}
+  .loading{text-align:center;padding:80px;color:#8b949e}
+  .muted{color:#8b949e}
+  a{color:#58a6ff}
+  h1,h2,h3{color:#f0f6fc}
+  .stat-value{font-size:24px;font-weight:bold;color:#f0f6fc}
+  .stat-label{font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.05em}
+</style>
+</head>
+<body>
+<div class="container mx-auto px-4 py-8 max-w-7xl">
+
+<header class="mb-8">
+  <h1 class="text-3xl font-bold">Auditoría ONPE 2026</h1>
+  <p class="muted mt-2">Cruce verificable entre el total nacional publicado por ONPE y la suma mesa por mesa.</p>
+  <div class="mt-3 flex flex-wrap gap-2">
+    <span class="badge-blue">Datos públicos</span>
+    <span class="badge-blue">Metodología replicable</span>
+    <span class="badge-blue">Auditoría ciudadana independiente</span>
+  </div>
+</header>
+
+<div id="loading" class="loading">Cargando datos…</div>
+<div id="root" class="hidden space-y-6"></div>
+
+<script>
+const CRIT_RATIO = 2.0;
+const WARN_RATIO = 1.5;
+// Primer apellido por codigo_agrupacion. Si hay ambigüedad (dos LÓPEZ),
+// añadimos el segundo apellido para distinguir.
+const NOMBRE_CORTO = {
+  8:  "FUJIMORI",
+  10: "SÁNCHEZ P.",
+  35: "LÓPEZ ALIAGA",
+  16: "NIETO",
+  14: "BELMONT",
+  23: "ÁLVAREZ",
+  2:  "LÓPEZ CHAU",
+};
+const TIPO_ANOM_LABEL = {
+  disproportionate_delta: "Desfase desproporcionado",
+  sum_mismatch: "Suma interna inconsistente",
+  electores_exceeded: "Emitidos > electores",
+  vote_change: "Acta contabilizada cambió",
+  missing: "Acta desaparecida",
+};
+const SEV_BADGE = {3: "badge-red", 2: "badge-orange", 1: "badge-blue"};
+
+function fmt(n){return n == null ? "—" : Number(n).toLocaleString("es-PE")}
+function pctFmt(n){return (n==null||isNaN(n)) ? "—" : n.toFixed(2) + "%"}
+function signed(n){return n > 0 ? "+"+fmt(n) : fmt(n)}
+
+async function main(){
+  let data;
+  try{
+    const r = await fetch("data/latest.json", {cache: "no-store"});
+    data = await r.json();
+  } catch(e){
+    document.getElementById("loading").textContent = "Error cargando data/latest.json — " + e.message;
+    return;
+  }
+  document.getElementById("loading").classList.add("hidden");
+  const root = document.getElementById("root");
+  root.classList.remove("hidden");
+
+  root.innerHTML = `
+    ${renderHeader(data)}
+    ${renderKeyFindings(data)}
+    ${renderCandidatos(data)}
+    ${renderAnomalias(data)}
+    ${renderDeptos(data)}
+    ${renderMetodologia(data)}
+  `;
+}
+
+function renderHeader(d){
+  return `
+  <section class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div class="card p-4">
+      <div class="stat-label">Actas contabilizadas</div>
+      <div class="stat-value">${pctFmt(d.national_snapshot.actas_pct)}</div>
+      <div class="text-xs muted mt-1">${fmt(d.national_snapshot.contabilizadas)} / ${fmt(d.national_snapshot.total_actas)}</div>
+    </div>
+    <div class="card p-4">
+      <div class="stat-label">Mesas en el cruce</div>
+      <div class="stat-value">${fmt(d.actas_snapshot.n_actas_en_db)}</div>
+      <div class="text-xs muted mt-1">fuente: ${d.actas_snapshot.modo}</div>
+    </div>
+    <div class="card p-4">
+      <div class="stat-label">Desfase total (top 7)</div>
+      <div class="stat-value">${fmt(d.total_abs_desfase)}</div>
+      <div class="text-xs muted mt-1">votos Σ|nacional − mesas|</div>
+    </div>
+    <div class="card p-4">
+      <div class="stat-label">Anomalías detectadas</div>
+      <div class="stat-value ${d.anomalies.length > 0 ? 'text-red-400' : 'text-green-400'}">${d.anomalies.length}</div>
+      <div class="text-xs muted mt-1">
+        ${d.anomalies.filter(a=>a.severity===3).length} críticas
+      </div>
+    </div>
+  </section>
+  <section class="text-xs muted">
+    Snapshot nacional: <span class="mono">${d.national_snapshot.captured_at}</span>
+    &nbsp;·&nbsp; Snapshot mesas: <span class="mono">${d.actas_snapshot.captured_at}</span>
+    &nbsp;·&nbsp; SHA256: <span class="mono">${d.integrity_sha256.slice(0,12)}…</span>
+    &nbsp;·&nbsp; Generado: <span class="mono">${d.generated_at}</span>
+  </section>`;
+}
+
+function renderKeyFindings(d){
+  const ordered = [...d.candidatos].sort((a,b)=>b.ratio - a.ratio);
+  const critical = ordered.filter(c=>c.ratio>=CRIT_RATIO);
+  if(critical.length === 0){
+    return `<section class="card card-green p-5">
+      <h2 class="text-xl font-semibold mb-2">✓ Sin desfases desproporcionados</h2>
+      <p class="muted">Ningún candidato supera el ratio 2.0x entre su % del voto y su aporte al desfase agregado.</p>
+    </section>`;
+  }
+  return `<section class="card card-red p-5">
+    <h2 class="text-xl font-semibold mb-2">⚠ ${critical.length} candidato${critical.length>1?'s':''} con desfase desproporcionado</h2>
+    <p class="muted mb-4 text-sm">Candidatos cuyo aporte al desfase total excede 2x su participación en el voto.</p>
+    ${critical.map(c=>`
+      <div class="mb-2">
+        <span class="font-semibold">${c.candidato}</span>
+        <span class="muted">(${c.agrupacion})</span>
+        — ratio <span class="mono font-bold text-red-400">${c.ratio.toFixed(2)}x</span>
+        · share ${pctFmt(c.share_pct)} vs aporte desfase ${pctFmt(c.pct_del_desfase)}
+        · diff <span class="mono">${signed(c.desfase)}</span>
+      </div>
+    `).join('')}
+  </section>`;
+}
+
+function renderCandidatos(d){
+  const rows = d.candidatos.map(c=>{
+    const cls = c.ratio >= CRIT_RATIO ? 'ratio-crit' : c.ratio >= WARN_RATIO ? 'ratio-warn' : '';
+    return `<tr>
+      <td>${c.candidato || '—'}<div class="text-xs muted">${c.agrupacion || ''}</div></td>
+      <td class="mono text-right">${fmt(c.nacional)}</td>
+      <td class="mono text-right">${fmt(c.mesas)}</td>
+      <td class="mono text-right">${signed(c.desfase)}</td>
+      <td class="mono text-right">${pctFmt(c.share_pct)}</td>
+      <td class="mono text-right ${cls}">${c.ratio.toFixed(2)}x</td>
+    </tr>`;
+  }).join('');
+  return `<section class="card p-5">
+    <h2 class="text-xl font-semibold mb-3">Comparativa por candidato</h2>
+    <div class="overflow-x-auto">
+    <table>
+      <thead><tr>
+        <th>Candidato</th>
+        <th class="text-right">ONPE nacional</th>
+        <th class="text-right">Σ mesas</th>
+        <th class="text-right">Desfase</th>
+        <th class="text-right">Share</th>
+        <th class="text-right">Ratio</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    </div>
+    <p class="text-xs muted mt-3">
+      <b>Share</b> = % del voto en la suma de mesas. <b>Ratio</b> = (% que el candidato aporta al desfase absoluto total) / share. Ratio ~1.0 = proporcional. Ratio &gt;2x (rojo) sugiere anomalía; &gt;1.5x (naranja) merece vigilancia.
+    </p>
+  </section>`;
+}
+
+function renderAnomalias(d){
+  if(!d.anomalies || d.anomalies.length === 0){
+    return `<section class="card card-green p-5">
+      <h2 class="text-xl font-semibold mb-2">Anomalías detectadas: 0</h2>
+      <p class="muted">Reglas verificadas: suma interna por acta, electores vs emitidos, desfase proporcional, cambio en actas contabilizadas, actas desaparecidas.</p>
+    </section>`;
+  }
+  const rows = d.anomalies.map(a=>`
+    <tr>
+      <td><span class="${SEV_BADGE[a.severity] || 'badge-blue'}">sev ${a.severity}</span></td>
+      <td>${TIPO_ANOM_LABEL[a.tipo] || a.tipo}</td>
+      <td class="mono">${a.codigo || (a.codigo_agrupacion ? 'agrup='+a.codigo_agrupacion : '—')}</td>
+      <td class="mono text-xs">${a.detalle ? JSON.stringify(a.detalle).slice(0, 180) : ''}</td>
+    </tr>
+  `).join('');
+  return `<section class="card card-red p-5">
+    <h2 class="text-xl font-semibold mb-3">Anomalías detectadas</h2>
+    <div class="overflow-x-auto">
+    <table>
+      <thead><tr>
+        <th>Severidad</th><th>Tipo</th><th>Código</th><th>Detalle</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    </div>
+  </section>`;
+}
+
+function renderDeptos(d){
+  const top5 = d.candidatos.slice(0, 5);
+  const deptoKeys = Object.keys(d.by_depto).sort((a,b)=>Number(a)-Number(b));
+  const rows = deptoKeys.map(did=>{
+    const name = d.depto_names[did] || `ubigeo=${did}`;
+    const cells = top5.map(c=>`<td class="mono text-right">${fmt(d.by_depto[did][c.codigo_agrupacion] || 0)}</td>`).join('');
+    return `<tr><td>${name}</td>${cells}</tr>`;
+  }).join('');
+  const header = top5.map(c=>{
+    const label = NOMBRE_CORTO[c.codigo_agrupacion]
+      || (c.candidato || '').split(' ').slice(-2, -1)[0]
+      || '—';
+    return `<th class="text-right">${label}</th>`;
+  }).join('');
+  return `<section class="card p-5">
+    <h2 class="text-xl font-semibold mb-3">Desglose por departamento (top 5 candidatos)</h2>
+    <div class="overflow-x-auto">
+    <table>
+      <thead><tr><th>Departamento</th>${header}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    </div>
+  </section>`;
+}
+
+function renderMetodologia(d){
+  return `<section class="card card-blue p-5">
+    <h2 class="text-xl font-semibold mb-2">Metodología</h2>
+    <ul class="text-sm space-y-2 list-disc ml-5">
+      <li><b>Snapshot nacional</b>: capturado cada hora via Playwright del endpoint público <span class="mono">resultadoelectoral.onpe.gob.pe/presentacion-backend/resumen-general/participantes</span>.</li>
+      <li><b>Suma mesa-a-mesa</b>: ingestada del dataset público de <a href="https://primeinstitute.com/onpe/" target="_blank">PRIME INSTITUTE</a> (86,111 actas) mientras ONPE no habilite el módulo de descarga masiva.</li>
+      <li><b>Ratio</b>: para cada candidato, compara su participación en el voto agregado por mesa contra su aporte al desfase total. Un error técnico uniforme produciría ratios cercanos a 1.0x para todos los candidatos.</li>
+      <li><b>Verificable</b>: el campo <span class="mono">integrity_sha256</span> identifica este snapshot. Descarga <a href="data/latest.json">latest.json</a> y replica el cálculo.</li>
+      <li><b>Este sitio no concluye fraude</b>. Muestra números. Su interpretación corresponde a ONPE, JEE, JNE y observadores electorales.</li>
+    </ul>
+  </section>`;
+}
+
+main();
+</script>
+</div>
+</body>
+</html>
