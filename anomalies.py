@@ -8,6 +8,7 @@ Reglas implementadas:
   3. disproportionate_delta — candidato con ratio desfase/share > 2.0x a nivel agregado
   4. vote_change — [historical] una acta ya 'contabilizada' cambio su conteo entre snapshots
   5. missing_acta — [historical] acta que existia en snapshot previo ya no aparece
+  6. outlier_local — mesa con votos de un partido >= Nσ respecto a su colegio (surge/drop)
 
 Uso:
   python anomalies.py                # solo snapshot actual
@@ -28,6 +29,13 @@ OUT_DIR = Path(__file__).parent / "data"
 ELECCION_PRESIDENCIAL = 10
 RATIO_DISPROPORTIONATE_THRESHOLD = 2.0
 SUM_MISMATCH_TOLERANCE = 5  # votos
+
+# outlier_local tuning
+OUTLIER_MIN_MESAS_POR_LOCAL = 5      # colegio debe tener >=5 mesas para computar stats
+OUTLIER_SIGMA_SURGE = 5.0            # umbral de sigmas para flaggear "surge" (valor alto)
+OUTLIER_SIGMA_DROP = 5.0             # idem para "drop" (valor bajo)
+OUTLIER_MIN_VOTES_SURGE = 10         # piso absoluto: surge debe tener >= N votos (ignora ruido)
+OUTLIER_MIN_MEAN_DROP = 10           # para flaggear drop, la media local debe ser >= N (partido relevante)
 
 
 def latest_actas_snapshot(conn, eid: int):
@@ -180,6 +188,122 @@ def detect_missing_actas(conn, curr_sid: int, prev_sid: int, eid: int) -> list[d
             for r in rows]
 
 
+def detect_outlier_local(conn, snap_id: int, eid: int) -> list[dict]:
+    """Por colegio de votacion (codigoLocalVotacion en raw_json), para cada partido,
+    computa media + desviacion tipica de los votos entre las mesas del colegio.
+    Flaggea mesas donde un partido tiene:
+      * surge: votos >= mean + OUTLIER_SIGMA_SURGE*std  Y  votos >= OUTLIER_MIN_VOTES_SURGE
+      * drop:  mean >= OUTLIER_MIN_MEAN_DROP  Y  (mean - votos) >= OUTLIER_SIGMA_DROP*std
+
+    Requiere que el colegio tenga >= OUTLIER_MIN_MESAS_POR_LOCAL mesas contabilizadas.
+    """
+    # 1. Mapear cada mesa a su codigoLocalVotacion
+    mesa_local = {}
+    for codigo, local in conn.execute(
+        """
+        SELECT a.codigo, json_extract(a.raw_json, '$.codigoLocalVotacion')
+        FROM actas a
+        WHERE a.snapshot_id=? AND a.id_eleccion=? AND a.estado='contabilizada'
+          AND a.raw_json IS NOT NULL
+        """,
+        (snap_id, eid),
+    ):
+        if local:
+            mesa_local[codigo] = str(local)
+
+    if not mesa_local:
+        return []
+
+    # 2. Traer votos por (mesa, agrupacion) para todas las mesas relevantes
+    # Usamos un solo query y agrupamos en python por local
+    local_to_mesas = defaultdict(list)
+    for codigo, local in mesa_local.items():
+        local_to_mesas[local].append(codigo)
+
+    # Filter locales con suficientes mesas
+    locales_validos = {l: ms for l, ms in local_to_mesas.items()
+                       if len(ms) >= OUTLIER_MIN_MESAS_POR_LOCAL}
+    if not locales_validos:
+        return []
+
+    mesas_relevantes = {c for ms in locales_validos.values() for c in ms}
+
+    # Votos por mesa x agrupacion (solo presidencial)
+    votos_mesa_agrup = defaultdict(dict)  # {codigo: {agrup: votos}}
+    for codigo, agrup, votos in conn.execute(
+        "SELECT codigo, codigo_agrupacion, votos FROM acta_votos "
+        "WHERE snapshot_id=? AND id_eleccion=?",
+        (snap_id, eid),
+    ):
+        if codigo in mesas_relevantes:
+            votos_mesa_agrup[codigo][agrup] = votos or 0
+
+    findings = []
+    for local, mesas in locales_validos.items():
+        # Conjunto de agrupaciones presentes en este colegio
+        agrup_set = set()
+        for m in mesas:
+            agrup_set.update(votos_mesa_agrup.get(m, {}).keys())
+
+        for agrup in agrup_set:
+            values = [votos_mesa_agrup.get(m, {}).get(agrup, 0) for m in mesas]
+            n = len(values)
+            if n < OUTLIER_MIN_MESAS_POR_LOCAL:
+                continue
+            total = sum(values)
+            total_sq = sum(v * v for v in values)
+
+            for m, v in zip(mesas, values):
+                # Leave-one-out: stats del colegio excluyendo la propia mesa.
+                # Evita que un outlier contamine su propia referencia.
+                n_o = n - 1
+                mean = (total - v) / n_o
+                var = (total_sq - v * v) / n_o - mean * mean
+                std = var ** 0.5 if var > 0 else 0
+                # Piso minimo para std (evita z-scores explotando con std≈0)
+                std_eff = max(std, 1.0)
+
+                # SURGE
+                if v >= OUTLIER_MIN_VOTES_SURGE:
+                    z_surge = (v - mean) / std_eff
+                    if z_surge >= OUTLIER_SIGMA_SURGE:
+                        findings.append({
+                            "tipo": "outlier_local",
+                            "codigo": m,
+                            "codigo_agrupacion": agrup,
+                            "detalle": {
+                                "subtipo": "surge",
+                                "codigo_local_votacion": local,
+                                "n_mesas_local": n,
+                                "votos_mesa": v,
+                                "media_local": round(mean, 2),
+                                "std_local": round(std, 2),
+                                "z_score": round(z_surge, 2),
+                            },
+                            "severity": 3,
+                        })
+                # DROP
+                if mean >= OUTLIER_MIN_MEAN_DROP and v < mean:
+                    z_drop = (mean - v) / std_eff
+                    if z_drop >= OUTLIER_SIGMA_DROP:
+                        findings.append({
+                            "tipo": "outlier_local",
+                            "codigo": m,
+                            "codigo_agrupacion": agrup,
+                            "detalle": {
+                                "subtipo": "drop",
+                                "codigo_local_votacion": local,
+                                "n_mesas_local": n,
+                                "votos_mesa": v,
+                                "media_local": round(mean, 2),
+                                "std_local": round(std, 2),
+                                "z_score": round(z_drop, 2),
+                            },
+                            "severity": 3,
+                        })
+    return findings
+
+
 def persist_findings(conn, snap_id: int, findings: list[dict]):
     for f in findings:
         insert_anomaly(
@@ -199,10 +323,27 @@ def main():
     ap.add_argument("--historical", action="store_true",
                     help="Correr reglas que comparan vs snapshot previo")
     ap.add_argument("--eleccion", type=int, default=ELECCION_PRESIDENCIAL)
+    ap.add_argument("--snapshot-id", type=int, default=None,
+                    help="Forzar un snapshot_id especifico (default: ultimo full con >=10000 actas)")
     args = ap.parse_args()
 
     conn = get_conn()
-    actas_row = latest_actas_snapshot(conn, args.eleccion)
+    if args.snapshot_id:
+        row = conn.execute(
+            "SELECT id, captured_at, modo FROM actas_snapshots WHERE id=? AND id_eleccion=?",
+            (args.snapshot_id, args.eleccion),
+        ).fetchone()
+        actas_row = row
+    else:
+        # Preferir el ultimo snapshot full con >=10000 actas; caer al latest si no hay
+        actas_row = conn.execute(
+            "SELECT id, captured_at, modo FROM actas_snapshots "
+            "WHERE id_eleccion=? AND actas_ok >= 10000 "
+            "ORDER BY id DESC LIMIT 1",
+            (args.eleccion,),
+        ).fetchone()
+        if not actas_row:
+            actas_row = latest_actas_snapshot(conn, args.eleccion)
     if not actas_row:
         print("No hay snapshots de actas")
         sys.exit(1)
@@ -222,21 +363,26 @@ def main():
     print(f"     {len(f2)} hallazgos")
     all_findings.extend(f2)
 
+    print("[3] Detectando outlier_local (votos anomalos vs colegio)...")
+    f_ol = detect_outlier_local(conn, snap_id, args.eleccion)
+    print(f"     {len(f_ol)} hallazgos")
+    all_findings.extend(f_ol)
+
     if args.historical:
         prev_row = previous_actas_snapshot(conn, args.eleccion, snap_id)
         if prev_row:
             prev_sid, prev_captured = prev_row
-            print(f"[3] Detectando vote_change vs snapshot id={prev_sid} ({prev_captured})...")
+            print(f"[4] Detectando vote_change vs snapshot id={prev_sid} ({prev_captured})...")
             f3 = detect_vote_changes(conn, snap_id, prev_sid, args.eleccion)
             print(f"     {len(f3)} hallazgos")
             all_findings.extend(f3)
 
-            print(f"[4] Detectando missing vs snapshot id={prev_sid}...")
+            print(f"[5] Detectando missing vs snapshot id={prev_sid}...")
             f4 = detect_missing_actas(conn, snap_id, prev_sid, args.eleccion)
             print(f"     {len(f4)} hallazgos")
             all_findings.extend(f4)
         else:
-            print("[hist] no hay snapshot previo — skip reglas 3, 4")
+            print("[hist] no hay snapshot previo — skip reglas historicas")
 
     persist_findings(conn, snap_id, all_findings)
 

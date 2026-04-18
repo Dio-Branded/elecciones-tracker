@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-18T03:41:00+00:00",
+  "generated_at": "2026-04-18T05:01:57+00:00",
   "national_snapshot": {
     "id": 4,
     "captured_at": "2026-04-16T21:27:50+00:00",
@@ -1448,6 +1448,70 @@
     "990000": "EXTRANJERO"
   },
   "anomalies": [
+    {
+      "id": 24,
+      "detected_at": "2026-04-18T04:59:05+00:00",
+      "tipo": "sum_mismatch",
+      "codigo": 74788,
+      "codigo_agrupacion": null,
+      "severity": 2,
+      "detalle": {
+        "validos": 205,
+        "blancos": 0,
+        "nulos": 0,
+        "sum_esperado": 205,
+        "emitidos": 226,
+        "diff": -21
+      }
+    },
+    {
+      "id": 23,
+      "detected_at": "2026-04-18T04:59:05+00:00",
+      "tipo": "sum_mismatch",
+      "codigo": 58773,
+      "codigo_agrupacion": null,
+      "severity": 2,
+      "detalle": {
+        "validos": 197,
+        "blancos": 0,
+        "nulos": 0,
+        "sum_esperado": 197,
+        "emitidos": 237,
+        "diff": -40
+      }
+    },
+    {
+      "id": 22,
+      "detected_at": "2026-04-18T04:59:05+00:00",
+      "tipo": "sum_mismatch",
+      "codigo": 58771,
+      "codigo_agrupacion": null,
+      "severity": 2,
+      "detalle": {
+        "validos": 216,
+        "blancos": 0,
+        "nulos": 0,
+        "sum_esperado": 216,
+        "emitidos": 244,
+        "diff": -28
+      }
+    },
+    {
+      "id": 21,
+      "detected_at": "2026-04-18T04:59:05+00:00",
+      "tipo": "sum_mismatch",
+      "codigo": 37122,
+      "codigo_agrupacion": null,
+      "severity": 2,
+      "detalle": {
+        "validos": 193,
+        "blancos": 0,
+        "nulos": 0,
+        "sum_esperado": 193,
+        "emitidos": 231,
+        "diff": -38
+      }
+    },
     {
       "id": 18,
       "detected_at": "2026-04-18T03:40:06+00:00",
