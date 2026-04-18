@@ -9,9 +9,9 @@ echo ========== %DATE% %TIME% ========== >> %LOG%
 REM 1. Snapshot nacional (presidencial + senadores + parlamento andino)
 %PY% scraper.py >> %LOG% 2>&1
 
-REM 2. Descargar mesas de la mejor fuente disponible (auto = priority ascendente)
-REM    mesa_search (ONPE direct, 20 req/s) > prime_csv mirror > stub onpe_oficial
-%PY% scraper_actas.py >> %LOG% 2>&1
+REM 2. Descargar mesas — modo incremental (pendientes + sample contabilizadas, ~1 min)
+REM    Para el primer snapshot full del día, usar `run_daily.bat` (sin --incremental)
+%PY% scraper_actas.py --strategy mesa_search --incremental >> %LOG% 2>&1
 
 REM 3. Analizar cruce mesa-a-mesa vs nacional
 %PY% analyze_actas.py >> %LOG% 2>&1

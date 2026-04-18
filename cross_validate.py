@@ -29,11 +29,20 @@ OUT_DIR = Path(__file__).parent / "data"
 
 
 def latest_snapshot_per_source(conn, id_eleccion: int) -> dict[str, int]:
-    """Retorna {source: snapshot_id} del mas reciente por cada source."""
+    """Retorna {source: snapshot_id} del snapshot MAS COMPLETO (actas_ok mas grande)
+    por cada source. Asi evitamos comparar un incremental (pocas mesas) contra un
+    full (muchas mesas)."""
     rows = list(conn.execute(
-        "SELECT source, MAX(id) FROM actas_snapshots "
-        "WHERE id_eleccion=? AND source IS NOT NULL GROUP BY source",
-        (id_eleccion,),
+        """
+        SELECT source, id FROM actas_snapshots
+        WHERE id_eleccion=? AND source IS NOT NULL
+        AND (source, actas_ok) IN (
+            SELECT source, MAX(actas_ok) FROM actas_snapshots
+            WHERE id_eleccion=? AND source IS NOT NULL
+            GROUP BY source
+        )
+        """,
+        (id_eleccion, id_eleccion),
     ))
     return {source: sid for source, sid in rows if source}
 
@@ -97,17 +106,23 @@ def compare_pair(conn, src_a: str, sid_a: int, src_b: str, sid_b: int, id_elecci
         ):
             by_code_b[codigo][cod_agrup] = votos
 
+        # Solo comparar candidatos que AMBAS fuentes tienen.
+        # Si una fuente (ej PRIME) solo trackea top-7 y la otra (ONPE direct)
+        # trackea todos, la diferencia en los 29 candidatos menores no es un
+        # mismatch real sino un artefacto de cobertura distinta.
         for codigo in sample:
             ma = by_code_a.get(codigo, {})
             mb = by_code_b.get(codigo, {})
-            if ma != mb:
-                diffs = {}
-                for k in set(ma.keys()) | set(mb.keys()):
-                    va = ma.get(k, 0); vb = mb.get(k, 0)
-                    if va != vb:
-                        diffs[k] = {"a": va, "b": vb}
-                if diffs:
-                    mesa_mismatches.append({"codigo": codigo, "diffs": diffs})
+            common_cods = set(ma.keys()) & set(mb.keys())
+            if not common_cods:
+                continue
+            diffs = {}
+            for k in common_cods:
+                va = ma[k]; vb = mb[k]
+                if va != vb:
+                    diffs[k] = {"a": va, "b": vb}
+            if diffs:
+                mesa_mismatches.append({"codigo": codigo, "diffs": diffs})
             if len(mesa_mismatches) >= 200:
                 break
 

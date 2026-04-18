@@ -102,6 +102,8 @@ def main():
     ap.add_argument("--from", dest="code_from", type=int, default=1)
     ap.add_argument("--to", dest="code_to", type=int, default=999999)
     ap.add_argument("--concurrency", type=int, default=20)
+    ap.add_argument("--incremental", action="store_true",
+                    help="Solo re-descargar codigos en estado jee/pendiente + sample contabilizadas")
     args = ap.parse_args()
 
     if args.list:
@@ -110,7 +112,8 @@ def main():
         cmd_probe_all(); return
     cmd_run(
         args.strategy, args.eleccion,
-        {"code_from": args.code_from, "code_to": args.code_to, "concurrency": args.concurrency},
+        {"code_from": args.code_from, "code_to": args.code_to,
+         "concurrency": args.concurrency, "incremental": args.incremental},
     )
 
 

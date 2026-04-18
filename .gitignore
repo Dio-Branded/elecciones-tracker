@@ -10,4 +10,7 @@ data/actas_analysis_*.json
 data/anomalies_report_*.json
 data/verify_prime_*.json
 data/dashboard_snapshot_*.json
+data/cross_validate_*.json
+data/validation_report_*.html
+data/actas_pdfs/
 logs/

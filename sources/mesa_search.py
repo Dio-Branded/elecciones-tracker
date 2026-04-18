@@ -128,13 +128,16 @@ class MesaSearchStrategy(ActasStrategy):
 
     def download(self, conn, id_eleccion: int = ID_ELECCION_PRESIDENCIAL,
                  code_from: int = 1, code_to: int = 999999,
-                 concurrency: int = 8, delay_ms: int = 80,
-                 batch_db: int = 500, progress_every: int = 500):
-        """Itera codigo 000001..999999 via la variante GET_q_padded.
+                 concurrency: int = 20, delay_ms: int = 0,
+                 batch_db: int = 500, progress_every: int = 500,
+                 incremental: bool = False, sample_pct: float = 0.01):
+        """Itera codigos via la variante GET_q_padded.
 
-        - concurrency: tareas asyncio paralelas (cuidar rate limits)
-        - delay_ms: delay entre requests por cada worker
-        - batch_db: flush cada N actas a SQLite
+        Modos:
+          - full: itera code_from..code_to (default 1..999999, ~15 min)
+          - incremental: solo codigos en estado jee/pendiente del ultimo snapshot
+                          + sample_pct de las contabilizadas (para detectar cambios).
+                          ~60 seg tipico, ideal para cron horario.
         """
         if self._working_variant is None:
             probe = self.probe()
@@ -142,19 +145,64 @@ class MesaSearchStrategy(ActasStrategy):
                 print(f"[{self.name}] probe FAIL: {probe.message}")
                 return None
 
-        return asyncio.run(_scrape_full(conn, id_eleccion, self.name,
-                                         code_from, code_to,
-                                         concurrency, delay_ms,
-                                         batch_db, progress_every))
+        if incremental:
+            codigos = _codigos_incremental(conn, id_eleccion, sample_pct)
+            if not codigos:
+                print(f"[{self.name}] incremental: 0 codigos a re-pedir (no hay snapshot previo)")
+                return None
+            return asyncio.run(_scrape_codes(conn, id_eleccion, self.name,
+                                              codigos, concurrency, delay_ms,
+                                              batch_db, progress_every,
+                                              modo_label="incremental"))
+
+        codigos = list(range(code_from, code_to + 1))
+        return asyncio.run(_scrape_codes(conn, id_eleccion, self.name,
+                                          codigos, concurrency, delay_ms,
+                                          batch_db, progress_every,
+                                          modo_label="full",
+                                          rango=(code_from, code_to)))
+
+
+def _codigos_incremental(conn, id_eleccion: int, sample_pct: float) -> list[int]:
+    """Retorna codigos que valen la pena re-pedir:
+       - todos los en estado jee o pendiente del ultimo snapshot
+       - sample_pct aleatorio de las contabilizadas (para detectar tampering)
+    """
+    import random
+    last_sid_row = conn.execute(
+        "SELECT MAX(id) FROM actas_snapshots WHERE id_eleccion=? AND actas_ok>0",
+        (id_eleccion,),
+    ).fetchone()
+    if not last_sid_row or not last_sid_row[0]:
+        return []
+    last_sid = last_sid_row[0]
+    pending = [r[0] for r in conn.execute(
+        "SELECT DISTINCT codigo FROM actas WHERE snapshot_id=? AND id_eleccion=? "
+        "AND estado IN ('jee','pendiente')",
+        (last_sid, id_eleccion),
+    )]
+    contab = [r[0] for r in conn.execute(
+        "SELECT DISTINCT codigo FROM actas WHERE snapshot_id=? AND id_eleccion=? "
+        "AND estado='contabilizada'",
+        (last_sid, id_eleccion),
+    )]
+    k = max(1, int(len(contab) * sample_pct))
+    sampled = random.sample(contab, min(k, len(contab)))
+    codigos = sorted(set(pending + sampled))
+    print(f"[incremental] prev_snap={last_sid}  pending+jee={len(pending)}  "
+          f"sample={len(sampled)}/{len(contab)} ({sample_pct:.1%})  total={len(codigos)}")
+    return codigos
 
 
 # ---------- Scraper implementation ----------
 
-async def _scrape_full(conn, id_eleccion: int, source_name: str,
-                       code_from: int, code_to: int,
-                       concurrency: int, delay_ms: int,
-                       batch_db: int, progress_every: int) -> int:
-    """Descarga paralela con aiohttp.
+async def _scrape_codes(conn, id_eleccion: int, source_name: str,
+                        codigos: list[int],
+                        concurrency: int, delay_ms: int,
+                        batch_db: int, progress_every: int,
+                        modo_label: str = "full",
+                        rango: tuple[int, int] | None = None) -> int:
+    """Descarga paralela con aiohttp sobre una lista arbitraria de codigos.
 
     Playwright se usa SOLO para obtener cookies iniciales (1 request).
     Despues, aiohttp hace todas las llamadas con headers de Origin/Referer
@@ -165,12 +213,14 @@ async def _scrape_full(conn, id_eleccion: int, source_name: str,
     from db import open_actas_snapshot, close_actas_snapshot, insert_acta_batch
 
     captured_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    rango_desde = rango[0] if rango else (min(codigos) if codigos else None)
+    rango_hasta = rango[1] if rango else (max(codigos) if codigos else None)
     snap_id = open_actas_snapshot(
         conn, captured_at, id_eleccion,
-        modo="full", rango_desde=code_from, rango_hasta=code_to,
+        modo=modo_label, rango_desde=rango_desde, rango_hasta=rango_hasta,
         source=source_name,
     )
-    print(f"[scrape] snapshot_id={snap_id} range={code_from}..{code_to}")
+    print(f"[scrape] snapshot_id={snap_id} modo={modo_label} codigos={len(codigos):,}")
 
     # 1) Bootstrap session via Playwright para obtener cookies
     print("[scrape] bootstrap Playwright para cookies...")
@@ -205,8 +255,9 @@ async def _scrape_full(conn, id_eleccion: int, source_name: str,
     async with aiohttp.ClientSession(cookie_jar=jar, headers=HEADERS,
                                       timeout=aiohttp.ClientTimeout(total=30)) as session:
         queue: asyncio.Queue[int] = asyncio.Queue()
-        for c in range(code_from, code_to + 1):
+        for c in codigos:
             queue.put_nowait(c)
+        total = len(codigos)
 
         async def worker():
             while True:
@@ -265,9 +316,9 @@ async def _scrape_full(conn, id_eleccion: int, source_name: str,
                     if stats["codigos_consultados"] % progress_every == 0:
                         elapsed = time.time() - t0
                         rps = stats["codigos_consultados"] / max(elapsed, 0.01)
-                        pending = queue.qsize()
-                        eta_min = pending / rps / 60 if rps > 0 else -1
-                        print(f"  [{stats['codigos_consultados']:>6}/{code_to-code_from+1}] "
+                        pending_n = queue.qsize()
+                        eta_min = pending_n / rps / 60 if rps > 0 else -1
+                        print(f"  [{stats['codigos_consultados']:>6}/{total}] "
                               f"ok={stats['actas_ok']:>5} empty={stats['no_content']:>5} "
                               f"err={stats['errores']:>3} {rps:.1f} req/s "
                               f"eta={eta_min:.1f}min")
@@ -368,19 +419,20 @@ if __name__ == "__main__":
         print(f"probe: ok={r.ok} msg={r.message}")
         if r.sample:
             print(json.dumps(r.sample, indent=2, ensure_ascii=False)[:2000])
-    elif "--download" in sys.argv:
+    elif "--download" in sys.argv or "--incremental" in sys.argv:
         from db import get_conn
-        # Parse --from N --to M
         args = sys.argv
+        incremental = "--incremental" in args
         code_from = int(args[args.index("--from") + 1]) if "--from" in args else 1
         code_to = int(args[args.index("--to") + 1]) if "--to" in args else 999999
-        concurrency = int(args[args.index("--concurrency") + 1]) if "--concurrency" in args else 8
+        concurrency = int(args[args.index("--concurrency") + 1]) if "--concurrency" in args else 20
         conn = get_conn()
-        sid = s.download(conn, code_from=code_from, code_to=code_to, concurrency=concurrency)
+        sid = s.download(conn, code_from=code_from, code_to=code_to,
+                          concurrency=concurrency, incremental=incremental)
         conn.close()
         print(f"snapshot_id={sid}")
     else:
-        print("Uso: python -m sources.mesa_search [--probe | --download [--from N --to M --concurrency K]]")
+        print("Uso: python -m sources.mesa_search [--probe | --download | --incremental]")
 
 
 if __name__ == "__main__":

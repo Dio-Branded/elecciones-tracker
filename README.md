@@ -1,6 +1,6 @@
 # Auditoría ONPE 2026 — Tracker Independiente
 
-Herramienta ciudadana que captura el total nacional publicado por ONPE y lo cruza contra la suma mesa por mesa para detectar desfases.
+Herramienta ciudadana que captura el total nacional publicado por ONPE y lo cruza contra la suma mesa por mesa para detectar desfases. Incluye descarga de PDFs escaneados de cada acta para validación humana.
 
 ## Qué hace
 
@@ -57,12 +57,11 @@ python -m playwright install chromium
 # 2. Primer snapshot nacional
 python scraper.py
 
-# 3. Descargar mesas (auto-selecciona la mejor fuente disponible)
-python scraper_actas.py
-# O forzar una fuente específica:
-python scraper_actas.py --strategy mesa_search --from 1 --to 999999 --concurrency 20
-python scraper_actas.py --strategy prime_csv
-python scraper_actas.py --probe-all    # reportar estado de cada strategy
+# 3a. FULL scrape: descarga todas las 88K mesas (~15 min, 1x al día)
+python scraper_actas.py --strategy mesa_search
+
+# 3b. INCREMENTAL: solo mesas pendientes + sample de contabilizadas (~1 min, cada hora)
+python scraper_actas.py --strategy mesa_search --incremental
 
 # 4. Analizar cruce
 python analyze_actas.py
@@ -73,15 +72,20 @@ python anomalies.py --historical
 # 6. Cross-validar fuentes (si hay ≥2)
 python cross_validate.py
 
-# 7. Generar JSON para dashboard
+# 7. Validar mesas específicas descargando sus PDFs escaneados
+python validate_actas.py --limit 10             # primeras 10 con mismatch
+python validate_actas.py --codigo 1,100,50000   # mesas específicas
+# Genera data/validation_report_*.html con tabla comparativa + links a PDFs
+
+# 8. Generar JSON para dashboard
 python build_dashboard_data.py
 
-# 8. Ver dashboard local
+# 9. Ver dashboard local
 cd dashboard && python -m http.server 8765
 # abrir http://localhost:8765
 ```
 
-En Windows el `run_hourly.bat` encadena 1→7. Programar con Task Scheduler para ejecutar cada hora.
+En Windows el `run_hourly.bat` encadena 1→6+8. Programar con Task Scheduler para ejecutar cada hora.
 
 ## Publicación (Cloudflare Pages)
 
