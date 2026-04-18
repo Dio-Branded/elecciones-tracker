@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-18T02:02:19+00:00",
+  "generated_at": "2026-04-18T03:05:11+00:00",
   "national_snapshot": {
     "id": 4,
     "captured_at": "2026-04-16T21:27:50+00:00",
@@ -13,6 +13,8 @@
     "id": 1,
     "captured_at": "2026-04-18T01:40:13+00:00",
     "modo": "prime_csv",
+    "source": "prime_csv",
+    "source_sha256": "0c4793c7c62c1bb1503311fbdbafe76a1c7c91742b0ee8f6ac964a0b695fba26",
     "n_actas_ok": 86111,
     "n_actas_en_db": 85751,
     "sum_validos": 15025913,
@@ -20,6 +22,20 @@
     "n_contabilizadas": 81227,
     "n_jee": 4524
   },
+  "sources_all": [
+    {
+      "source": "mesa_search",
+      "snapshot_id": 4,
+      "captured_at": "2026-04-18T02:58:27+00:00",
+      "actas_ok": 500
+    },
+    {
+      "source": "prime_csv",
+      "snapshot_id": 1,
+      "captured_at": "2026-04-18T01:40:13+00:00",
+      "actas_ok": 86111
+    }
+  ],
   "candidatos": [
     {
       "codigo_agrupacion": 10,

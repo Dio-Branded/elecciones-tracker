@@ -98,6 +98,17 @@ async function main(){
 }
 
 function renderHeader(d){
+  const SOURCE_BADGE = {
+    mesa_search: {label: "ONPE direct (scraped)", cls: "badge-green"},
+    prime_csv: {label: "PRIME CSV mirror", cls: "badge-orange"},
+    onpe_oficial: {label: "ONPE oficial (datos abiertos)", cls: "badge-green"},
+    selenium_direct: {label: "Selenium directo", cls: "badge-green"},
+  };
+  const srcKey = d.actas_snapshot.source || "unknown";
+  const srcInfo = SOURCE_BADGE[srcKey] || {label: srcKey, cls: "badge-blue"};
+  const sourcesList = (d.sources_all || [])
+    .map(s => `<span class="${(SOURCE_BADGE[s.source]||{cls:'badge-blue'}).cls} mr-1">${s.source}</span>`)
+    .join('');
   return `
   <section class="grid grid-cols-2 md:grid-cols-4 gap-3">
     <div class="card p-4">
@@ -108,7 +119,7 @@ function renderHeader(d){
     <div class="card p-4">
       <div class="stat-label">Mesas en el cruce</div>
       <div class="stat-value">${fmt(d.actas_snapshot.n_actas_en_db)}</div>
-      <div class="text-xs muted mt-1">fuente: ${d.actas_snapshot.modo}</div>
+      <div class="mt-1"><span class="${srcInfo.cls}">${srcInfo.label}</span></div>
     </div>
     <div class="card p-4">
       <div class="stat-label">Desfase total (top 7)</div>
@@ -123,11 +134,14 @@ function renderHeader(d){
       </div>
     </div>
   </section>
-  <section class="text-xs muted">
-    Snapshot nacional: <span class="mono">${d.national_snapshot.captured_at}</span>
-    &nbsp;·&nbsp; Snapshot mesas: <span class="mono">${d.actas_snapshot.captured_at}</span>
-    &nbsp;·&nbsp; SHA256: <span class="mono">${d.integrity_sha256.slice(0,12)}…</span>
-    &nbsp;·&nbsp; Generado: <span class="mono">${d.generated_at}</span>
+  <section class="text-xs muted space-y-1">
+    <div>
+      Snapshot nacional: <span class="mono">${d.national_snapshot.captured_at}</span>
+      &nbsp;·&nbsp; Snapshot mesas: <span class="mono">${d.actas_snapshot.captured_at}</span>
+      &nbsp;·&nbsp; SHA256: <span class="mono">${d.integrity_sha256.slice(0,12)}…</span>
+      &nbsp;·&nbsp; Generado: <span class="mono">${d.generated_at}</span>
+    </div>
+    ${sourcesList ? `<div>Fuentes disponibles: ${sourcesList}</div>` : ''}
   </section>`;
 }
 

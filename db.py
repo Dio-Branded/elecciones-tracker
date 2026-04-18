@@ -50,7 +50,10 @@ CREATE TABLE IF NOT EXISTS actas_snapshots (
     no_content INTEGER DEFAULT 0,
     errores INTEGER DEFAULT 0,
     duracion_s REAL,
-    modo TEXT             -- 'full' | 'incremental' | 'sample'
+    modo TEXT,            -- 'full' | 'incremental' | 'sample' | 'prime_csv'
+    source TEXT,          -- 'prime_csv' | 'prime_csv_v2' | 'onpe_oficial' | 'selenium_direct' | 'mesa_search'
+    source_etag TEXT,     -- For external source monitors (ETag / Last-Modified)
+    source_sha256 TEXT    -- Content hash for tamper detection
 );
 
 CREATE TABLE IF NOT EXISTS actas (
@@ -101,21 +104,37 @@ CREATE INDEX IF NOT EXISTS idx_anomalies_time ON anomalies(detected_at);
 CREATE INDEX IF NOT EXISTS idx_anomalies_tipo ON anomalies(tipo, severity);
 """
 
+def _migrate_add_columns(conn):
+    """Anade columnas a tablas existentes sin perder data."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(actas_snapshots)")}
+    if "source" not in cols:
+        conn.execute("ALTER TABLE actas_snapshots ADD COLUMN source TEXT")
+    if "source_etag" not in cols:
+        conn.execute("ALTER TABLE actas_snapshots ADD COLUMN source_etag TEXT")
+    if "source_sha256" not in cols:
+        conn.execute("ALTER TABLE actas_snapshots ADD COLUMN source_sha256 TEXT")
+    conn.commit()
+
+
 def get_conn():
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.executescript(SCHEMA)
+    _migrate_add_columns(conn)
     return conn
 
 
 def open_actas_snapshot(conn, captured_at: str, id_eleccion: int, modo: str,
-                        rango_desde: int | None = None, rango_hasta: int | None = None) -> int:
+                        rango_desde: int | None = None, rango_hasta: int | None = None,
+                        source: str | None = None,
+                        source_etag: str | None = None,
+                        source_sha256: str | None = None) -> int:
     cur = conn.execute(
-        "INSERT INTO actas_snapshots (captured_at, id_eleccion, modo, rango_desde, rango_hasta) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (captured_at, id_eleccion, modo, rango_desde, rango_hasta),
+        "INSERT INTO actas_snapshots (captured_at, id_eleccion, modo, rango_desde, rango_hasta, "
+        " source, source_etag, source_sha256) VALUES (?,?,?,?,?,?,?,?)",
+        (captured_at, id_eleccion, modo, rango_desde, rango_hasta, source, source_etag, source_sha256),
     )
     conn.commit()
     return cur.lastrowid

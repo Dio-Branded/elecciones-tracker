@@ -1,5 +1,5 @@
 @echo off
-REM ONPE tracker — captura snapshot horario + analisis de actas
+REM ONPE tracker — captura snapshot horario + analisis de actas + anomalias
 cd /d "%~dp0"
 set PY="C:\Users\Marcelo\AppData\Local\Programs\Python\Python311\python.exe"
 set LOG=logs\cron.log
@@ -9,16 +9,20 @@ echo ========== %DATE% %TIME% ========== >> %LOG%
 REM 1. Snapshot nacional (presidencial + senadores + parlamento andino)
 %PY% scraper.py >> %LOG% 2>&1
 
-REM 2. Refrescar CSV de PRIME (solo si es mas viejo que 1h, maneja cache internamente)
-%PY% verify_prime_csv.py >> %LOG% 2>&1
+REM 2. Descargar mesas de la mejor fuente disponible (auto = priority ascendente)
+REM    mesa_search (ONPE direct, 20 req/s) > prime_csv mirror > stub onpe_oficial
+%PY% scraper_actas.py >> %LOG% 2>&1
 
-REM 3. Re-analizar actas vs nacional (usa el snapshot actual de cada lado)
+REM 3. Analizar cruce mesa-a-mesa vs nacional
 %PY% analyze_actas.py >> %LOG% 2>&1
 
-REM 4. Detector de anomalias (incluye comparacion historica con snapshot previo si existe)
+REM 4. Detector de anomalias + comparacion historica
 %PY% anomalies.py --historical >> %LOG% 2>&1
 
-REM 5. Consolidar JSON para dashboard
+REM 5. Cross-validar fuentes si hay >=2
+%PY% cross_validate.py >> %LOG% 2>&1
+
+REM 6. Consolidar JSON para dashboard
 %PY% build_dashboard_data.py >> %LOG% 2>&1
 
 echo done >> %LOG%

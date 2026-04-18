@@ -61,14 +61,22 @@ def main():
     ))
     nat_by_cod = {c[0]: {"agrupacion": c[1], "candidato": c[2], "votos": c[3], "pct": c[4]} for c in cands}
 
-    # Actas mas reciente
+    # Mejor snapshot completo: actas_ok >= 10000 (smoke tests excluidos),
+    # mas reciente primero en caso de empate de tamanio
     act = conn.execute(
-        "SELECT id, captured_at, modo, actas_ok FROM actas_snapshots "
-        "WHERE id_eleccion=? ORDER BY id DESC LIMIT 1", (ID_ELECCION,)
+        "SELECT id, captured_at, modo, actas_ok, source, source_sha256 FROM actas_snapshots "
+        "WHERE id_eleccion=? AND actas_ok >= 10000 "
+        "ORDER BY captured_at DESC LIMIT 1", (ID_ELECCION,)
     ).fetchone()
     if not act:
+        # Fallback: cualquier snapshot
+        act = conn.execute(
+            "SELECT id, captured_at, modo, actas_ok, source, source_sha256 FROM actas_snapshots "
+            "WHERE id_eleccion=? ORDER BY actas_ok DESC LIMIT 1", (ID_ELECCION,)
+        ).fetchone()
+    if not act:
         print("ERROR: no hay actas_snapshot"); sys.exit(1)
-    act_sid, act_captured, act_modo, act_ok = act
+    act_sid, act_captured, act_modo, act_ok, act_source, act_sha256 = act
 
     # Suma mesas por candidato
     mesas = {r[0]: r[1] for r in conn.execute(
@@ -152,10 +160,19 @@ def main():
         },
         "actas_snapshot": {
             "id": act_sid, "captured_at": act_captured, "modo": act_modo,
+            "source": act_source, "source_sha256": act_sha256,
             "n_actas_ok": act_ok,
             "n_actas_en_db": totals[0], "sum_validos": totals[1],
             "sum_emitidos": totals[2], "n_contabilizadas": totals[3], "n_jee": totals[4],
         },
+        "sources_all": [
+            {"source": r[0], "snapshot_id": r[1], "captured_at": r[2], "actas_ok": r[3]}
+            for r in conn.execute(
+                "SELECT source, MAX(id), MAX(captured_at), MAX(actas_ok) FROM actas_snapshots "
+                "WHERE id_eleccion=? AND source IS NOT NULL GROUP BY source",
+                (ID_ELECCION,),
+            )
+        ],
         "candidatos": cmp_rows,
         "total_abs_desfase": total_abs,
         "by_depto": {str(k): v for k, v in by_depto.items()},
