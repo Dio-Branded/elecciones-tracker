@@ -69,34 +69,54 @@ def extract_vote_column(pdf: Path) -> np.ndarray:
 
 
 def load_anomaly_hits() -> dict[int, list[dict]]:
+    """Returns {codigo: [findings]} for every mesa-level rule in the latest report."""
     files = sorted(OUT_DIR.glob("anomalies_report_*.json"))
     if not files:
         return {}
     data = json.loads(files[-1].read_text(encoding="utf-8"))
     out = defaultdict(list)
+    mesa_rules = {"outlier_local", "zero_blanks_nulls", "extreme_concentration",
+                  "sum_mismatch", "electores_exceeded"}
     for f in data["findings"]:
-        if f.get("tipo") == "outlier_local" and f.get("codigo") is not None:
+        if f.get("tipo") in mesa_rules and f.get("codigo") is not None:
             out[f["codigo"]].append(f)
     return out
 
 
 def prioritize(codigos: list[int], anomaly_hits: dict[int, list[dict]]):
-    """Returns list of (codigo, priority, max_z) sorted by priority then z desc."""
+    """Returns list of (codigo, priority, score) sorted by priority then score desc.
+
+    Priority (lower = more suspicious):
+      1 - multi-rule: mesa dispara >=2 reglas distintas (ej. outlier + zero_blanks_nulls)
+      2 - single rule outlier_local surge+drop (posible transposicion)
+      3 - outlier_local solo surge
+      4 - outlier_local solo drop
+      5 - otra regla sola (zero_blanks_nulls, extreme_concentration, sum_mismatch)
+
+    Score: max z_score de outlier_local + bonus por reglas adicionales.
+    """
     out = []
     for c in codigos:
         hits = anomaly_hits.get(c, [])
-        has_surge = any(h["detalle"]["subtipo"] == "surge" for h in hits)
-        has_drop = any(h["detalle"]["subtipo"] == "drop" for h in hits)
-        if has_surge and has_drop:
+        tipos = {h["tipo"] for h in hits}
+        ol_hits = [h for h in hits if h["tipo"] == "outlier_local"]
+        has_surge = any(h["detalle"].get("subtipo") == "surge" for h in ol_hits)
+        has_drop = any(h["detalle"].get("subtipo") == "drop" for h in ol_hits)
+        z_max = max((h["detalle"].get("z_score", 0) for h in ol_hits), default=0)
+
+        if len(tipos) >= 2:
             pri = 1
-        elif has_surge:
+        elif has_surge and has_drop:
             pri = 2
-        elif has_drop:
+        elif has_surge:
             pri = 3
-        else:
+        elif has_drop:
             pri = 4
-        max_z = max((h["detalle"]["z_score"] for h in hits), default=0)
-        out.append((c, pri, max_z))
+        else:
+            pri = 5
+
+        score = z_max + 20 * (len(tipos) - 1)  # bonus de 20 por cada regla extra
+        out.append((c, pri, score))
     out.sort(key=lambda t: (t[1], -t[2]))
     return out
 
@@ -154,9 +174,11 @@ def render_mesa_block(codigo: int, hits: list[dict], conn, snap_id: int,
         (snap_id, codigo),
     ).fetchone()
 
-    # Flag which agrups are anomalous
-    surge_agrups = {h["codigo_agrupacion"] for h in hits if h["detalle"]["subtipo"] == "surge"}
-    drop_agrups = {h["codigo_agrupacion"] for h in hits if h["detalle"]["subtipo"] == "drop"}
+    # Flag which agrups are anomalous (only outlier_local has agrup-level info)
+    surge_agrups = {h["codigo_agrupacion"] for h in hits
+                    if h["tipo"] == "outlier_local" and h["detalle"].get("subtipo") == "surge"}
+    drop_agrups = {h["codigo_agrupacion"] for h in hits
+                   if h["tipo"] == "outlier_local" and h["detalle"].get("subtipo") == "drop"}
 
     html = [f'<div class="card">']
     html.append(f'<h2>Mesa {padded}</h2>')
@@ -178,17 +200,28 @@ def render_mesa_block(codigo: int, hits: list[dict], conn, snap_id: int,
     if direccion:
         html.append(f'<div class="direccion">{direccion}</div>')
 
-    # Anomaly tags
+    # Anomaly tags — multi-rule display
     html.append('<div class="tags">')
     for h in hits:
-        sub = h["detalle"]["subtipo"]
-        agr = h["codigo_agrupacion"]
-        z = h["detalle"]["z_score"]
-        v = h["detalle"]["votos_mesa"]
-        mn = h["detalle"]["media_local"]
-        cls = "tag surge" if sub == "surge" else "tag drop"
-        name = nom_map.get(agr, f"agrup_{agr}")
-        html.append(f'<span class="{cls}">{sub} ag={agr} {name[:25]} v={v} mean={mn} z={z}</span>')
+        tipo = h["tipo"]
+        d = h["detalle"]
+        if tipo == "outlier_local":
+            sub = d["subtipo"]
+            agr = h["codigo_agrupacion"]
+            name = nom_map.get(agr, f"agrup_{agr}")
+            cls = "tag surge" if sub == "surge" else "tag drop"
+            html.append(f'<span class="{cls}">{sub} ag={agr} {name[:25]} '
+                        f'v={d["votos_mesa"]} mean={d["media_local"]} z={d["z_score"]}</span>')
+        elif tipo == "zero_blanks_nulls":
+            html.append(f'<span class="tag zbn">zero_blanks_nulls: {d["emitidos"]} emitidos, 0 blancos, 0 nulos</span>')
+        elif tipo == "extreme_concentration":
+            top = ", ".join(f'ag{x["agrup"]}={x["votos"]}' for x in d["distribucion"][:3])
+            html.append(f'<span class="tag conc">extreme_concentration: {d["n_agrupaciones_con_voto"]} partidos '
+                        f'({d["emitidos"]} emit) {top}</span>')
+        elif tipo == "sum_mismatch":
+            html.append(f'<span class="tag sum">sum_mismatch: diff={d.get("diff")}</span>')
+        elif tipo == "electores_exceeded":
+            html.append(f'<span class="tag exc">electores_exceeded: exceso={d.get("exceso")}</span>')
     html.append('</div>')
 
     # Layout: image left, table right
@@ -275,10 +308,11 @@ def main():
 body{background:#0d1117;color:#e6edf3;font-family:sans-serif;margin:20px;max-width:1400px;margin:auto}
 h1{color:#58a6ff}
 .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;margin:16px 0}
-.card.p1{border-left:5px solid #f85149}
-.card.p2{border-left:5px solid #f0883e}
-.card.p3{border-left:5px solid #ffd33d}
-.card.p4{border-left:5px solid #8b949e}
+.card.p1{border-left:5px solid #db61a2}
+.card.p2{border-left:5px solid #f85149}
+.card.p3{border-left:5px solid #f0883e}
+.card.p4{border-left:5px solid #ffd33d}
+.card.p5{border-left:5px solid #8b949e}
 h2{color:#f0883e;margin:0 0 8px}
 .geo{font-size:13px;color:#3fb950;margin-bottom:3px;font-weight:bold}
 .ubic{font-size:13px;color:#c9d1d9;margin-bottom:3px}
@@ -288,6 +322,10 @@ h2{color:#f0883e;margin:0 0 8px}
 .tag{background:#21262d;padding:3px 9px;border-radius:4px;font-size:11px;margin-right:6px;display:inline-block;margin-bottom:4px}
 .tag.surge{color:#f85149;background:#f8514922}
 .tag.drop{color:#58a6ff;background:#58a6ff22}
+.tag.zbn{color:#db61a2;background:#db61a222}
+.tag.conc{color:#f0883e;background:#f0883e22}
+.tag.sum{color:#ffd33d;background:#ffd33d22}
+.tag.exc{color:#ff6b6b;background:#ff6b6b22}
 .row{display:flex;gap:16px;align-items:flex-start}
 .col-img{flex:0 0 460px}
 .col-img img{width:100%;border:1px solid #30363d;border-radius:4px;background:white}
@@ -307,9 +345,11 @@ a{color:#58a6ff}
 <div class="summary">
   <p>Cada tarjeta muestra la <b>columna de votos del acta escaneada</b> (imagen) y los <b>valores reportados por la API</b> (tabla). Las filas resaltadas en rojo (surge) o azul (drop) son las que el detector outlier_local flaggeo como anomalas.</p>
   <p>Para cada mesa, verifica manualmente si los numeros manuscritos en la imagen coinciden con los valores de la API. Si no coinciden, esa mesa tiene una discrepancia real entre papel y sistema.</p>
-  <p><span class="tag" style="background:#f8514922;color:#f85149">Priority 1</span> mesas con surge+drop (posible transposicion)
-     <span class="tag" style="background:#f0883e22;color:#f0883e">Priority 2</span> surge puro
-     <span class="tag" style="background:#ffd33d22;color:#ffd33d">Priority 3</span> drop puro</p>
+  <p><span class="tag" style="background:#db61a222;color:#db61a2">P1</span> multi-regla (dispara >=2 tipos)
+     <span class="tag" style="background:#f8514922;color:#f85149">P2</span> transposicion (surge+drop)
+     <span class="tag" style="background:#f0883e22;color:#f0883e">P3</span> surge puro
+     <span class="tag" style="background:#ffd33d22;color:#ffd33d">P4</span> drop puro
+     <span class="tag" style="background:#8b949e22;color:#8b949e">P5</span> otra</p>
 </div>
 """
     parts = [header]

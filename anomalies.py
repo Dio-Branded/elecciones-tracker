@@ -9,6 +9,8 @@ Reglas implementadas:
   4. vote_change — [historical] una acta ya 'contabilizada' cambio su conteo entre snapshots
   5. missing_acta — [historical] acta que existia en snapshot previo ya no aparece
   6. outlier_local — mesa con votos de un partido >= Nσ respecto a su colegio (surge/drop)
+  7. zero_blanks_nulls — emitidos>=50 pero blancos=0 AND nulos=0 (patron estadisticamente improbable)
+  8. extreme_concentration — solo 1-3 agrupaciones concentran el voto con >=50 emitidos
 
 Uso:
   python anomalies.py                # solo snapshot actual
@@ -36,6 +38,13 @@ OUTLIER_SIGMA_SURGE = 5.0            # umbral de sigmas para flaggear "surge" (v
 OUTLIER_SIGMA_DROP = 5.0             # idem para "drop" (valor bajo)
 OUTLIER_MIN_VOTES_SURGE = 10         # piso absoluto: surge debe tener >= N votos (ignora ruido)
 OUTLIER_MIN_MEAN_DROP = 10           # para flaggear drop, la media local debe ser >= N (partido relevante)
+
+# zero_blanks_nulls tuning
+ZERO_BN_MIN_EMITIDOS = 50            # emitidos minimos para que tener 0 blancos y 0 nulos sea sospechoso
+
+# extreme_concentration tuning
+CONC_MIN_EMITIDOS = 50               # mesa relevante: >= N emitidos
+CONC_MAX_AGRUPS_WITH_VOTES = 3       # solo 1..N agrupaciones con votos en la mesa
 
 
 def latest_actas_snapshot(conn, eid: int):
@@ -304,6 +313,86 @@ def detect_outlier_local(conn, snap_id: int, eid: int) -> list[dict]:
     return findings
 
 
+def detect_zero_blanks_nulls(conn, snap_id: int, eid: int) -> list[dict]:
+    """Mesas con emitidos>=50 pero blancos=0 AND nulos=0.
+
+    Bajo condiciones normales, ~5-30% del voto es blanco o nulo. En mesas
+    con cientos de votos es casi imposible que ambos contadores sean 0
+    (probabilidad combinada <<1%). Flag severity 3.
+
+    Solo consideramos estado 'contabilizada' (no incluir pendientes JEE que
+    aun no tienen conteo de nulos/blancos completo).
+    """
+    rows = conn.execute(
+        """
+        SELECT codigo, total_votos_emitidos, votos_blancos, votos_nulos
+        FROM actas
+        WHERE snapshot_id=? AND id_eleccion=? AND estado='contabilizada'
+          AND total_votos_emitidos >= ?
+          AND (votos_blancos IS NULL OR votos_blancos=0)
+          AND (votos_nulos IS NULL OR votos_nulos=0)
+        """,
+        (snap_id, eid, ZERO_BN_MIN_EMITIDOS),
+    )
+    findings = []
+    for codigo, emit, bl, nu in rows:
+        findings.append({
+            "tipo": "zero_blanks_nulls",
+            "codigo": codigo,
+            "detalle": {
+                "emitidos": emit,
+                "blancos": bl or 0,
+                "nulos": nu or 0,
+            },
+            "severity": 3,
+        })
+    return findings
+
+
+def detect_extreme_concentration(conn, snap_id: int, eid: int) -> list[dict]:
+    """Mesas con >=CONC_MIN_EMITIDOS pero solo 1..CONC_MAX_AGRUPS con votos.
+
+    En 35 agrupaciones presidenciales, que 100+ votos se concentren en
+    solo 1-3 partidos es estadisticamente raro salvo en zonas con
+    militancia muy homogenea. Flag severity 2 (baja, puede ser legitimo).
+    Combinado con outlier_local o zero_blanks_nulls, sube la sospecha.
+    """
+    rows = list(conn.execute(
+        """
+        SELECT a.codigo, a.total_votos_emitidos,
+               COUNT(CASE WHEN v.votos>0 THEN 1 END) AS n_with_votes
+        FROM actas a
+        LEFT JOIN acta_votos v
+          ON v.snapshot_id=a.snapshot_id AND v.codigo=a.codigo AND v.id_eleccion=a.id_eleccion
+        WHERE a.snapshot_id=? AND a.id_eleccion=? AND a.estado='contabilizada'
+          AND a.total_votos_emitidos >= ?
+        GROUP BY a.codigo, a.total_votos_emitidos
+        HAVING n_with_votes BETWEEN 1 AND ?
+        """,
+        (snap_id, eid, CONC_MIN_EMITIDOS, CONC_MAX_AGRUPS_WITH_VOTES),
+    ))
+    findings = []
+    for codigo, emit, n_with in rows:
+        # Traer cuales son los agrups con votos
+        top = list(conn.execute(
+            "SELECT codigo_agrupacion, votos FROM acta_votos "
+            "WHERE snapshot_id=? AND codigo=? AND id_eleccion=? AND votos>0 "
+            "ORDER BY votos DESC",
+            (snap_id, codigo, eid),
+        ))
+        findings.append({
+            "tipo": "extreme_concentration",
+            "codigo": codigo,
+            "detalle": {
+                "emitidos": emit,
+                "n_agrupaciones_con_voto": n_with,
+                "distribucion": [{"agrup": a, "votos": v} for a, v in top],
+            },
+            "severity": 2,
+        })
+    return findings
+
+
 def persist_findings(conn, snap_id: int, findings: list[dict]):
     for f in findings:
         insert_anomaly(
@@ -368,16 +457,26 @@ def main():
     print(f"     {len(f_ol)} hallazgos")
     all_findings.extend(f_ol)
 
+    print("[4] Detectando zero_blanks_nulls (0 blancos Y 0 nulos con emitidos>=50)...")
+    f_zbn = detect_zero_blanks_nulls(conn, snap_id, args.eleccion)
+    print(f"     {len(f_zbn)} hallazgos")
+    all_findings.extend(f_zbn)
+
+    print("[5] Detectando extreme_concentration (<=3 partidos con voto, emitidos>=50)...")
+    f_ec = detect_extreme_concentration(conn, snap_id, args.eleccion)
+    print(f"     {len(f_ec)} hallazgos")
+    all_findings.extend(f_ec)
+
     if args.historical:
         prev_row = previous_actas_snapshot(conn, args.eleccion, snap_id)
         if prev_row:
             prev_sid, prev_captured = prev_row
-            print(f"[4] Detectando vote_change vs snapshot id={prev_sid} ({prev_captured})...")
+            print(f"[6] Detectando vote_change vs snapshot id={prev_sid} ({prev_captured})...")
             f3 = detect_vote_changes(conn, snap_id, prev_sid, args.eleccion)
             print(f"     {len(f3)} hallazgos")
             all_findings.extend(f3)
 
-            print(f"[5] Detectando missing vs snapshot id={prev_sid}...")
+            print(f"[7] Detectando missing vs snapshot id={prev_sid}...")
             f4 = detect_missing_actas(conn, snap_id, prev_sid, args.eleccion)
             print(f"     {len(f4)} hallazgos")
             all_findings.extend(f4)
