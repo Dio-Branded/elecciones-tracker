@@ -105,6 +105,40 @@ O conectar el repo a Cloudflare Pages desde su dashboard; cada commit al `main` 
 - **Este tracker no concluye fraude**. Muestra números verificables. Interpretación corresponde a ONPE, JEE, JNE y observadores electorales.
 - Cuando ≥2 fuentes existen, `cross_validate.py` señala discrepancias mesa-a-mesa entre ellas — fuerte indicador de tampering en al menos una de las fuentes.
 
+## 📌 Caso de estudio: mesa 054938 (San Juan de Miraflores, Lima)
+
+El detector `outlier_local` de `anomalies.py` marcó esta mesa con **surge y drop simultáneos** — el patrón candidato a transposición de filas. Es el outlier más extremo del país en este ciclo.
+
+**Lo que dice el acta física** (escaneo oficial de ONPE, coincide 100% con la API — no hay alteración entre papel y sistema):
+
+![Acta 054938, filas 31-38](docs/caso-054938/acta_zoom_filas31-38.png)
+
+- Fila 33, **Renovación Popular**: celda **vacía** (0 votos)
+- Fila 36, **PTE-Perú**: **61 votos** manuscritos
+
+**Por qué es anómalo:**
+
+| Métrica | Valor |
+|---|---|
+| Votos PTE-Perú en esta mesa | **61** — máximo absoluto nacional |
+| Percentil 99 nacional de PTE-Perú | 2 votos |
+| Única otra mesa del país con PTE ≥ 30 | 1 (voto en el extranjero, 36) |
+| RP en las otras 9 mesas del mismo colegio (IE 6041) | promedio **58**, rango 41-67 |
+| RP en esta mesa | **0** |
+| P(RP=0 · n=242 · p_Lima≈0.07) | ≈ 10⁻⁸ |
+| P(PTE≥61 · n=242 · p≈0.02) | ≈ 10⁻⁴⁸ |
+
+La coincidencia numérica — desaparecen ~58 votos esperados de la fila 33 y aparecen 61 en la fila 36 — es consistente con una **transposición de filas al transcribir el acta**. Las hipótesis, de más benigna a menos:
+
+1. Militancia local de PTE concentrada casualmente en esa mesa
+2. **Error de transcripción de los miembros de mesa** (filas 33 y 36 están a 3 renglones de distancia)
+3. Transposición intencional
+4. Manipulación coordinada
+
+**Este repositorio no concluye cuál.** Documenta el hallazgo con evidencia primaria reproducible: cualquiera puede descargar la misma acta del portal público de ONPE y verificar cada número. A escala nacional, la misma regla detectó **169 mesas con el patrón surge+drop simultáneo**; los candidatos grandes dominan sistemáticamente la columna de *drops* y los partidos pequeños la de *surges*. La regularidad del patrón — no un caso individual — es lo que amerita revisión por las autoridades electorales.
+
+*Nota: el recorte mostrado excluye deliberadamente la sección del acta con nombres y DNI de los miembros de mesa.*
+
 ## Endpoint ONPE — breakthrough técnico
 
 El endpoint `GET /presentacion-backend/actas/buscar/mesa?codigoMesa=NNNNNN` (código padded a 6 dígitos como **string**, no integer) retorna JSON con todas las elecciones por mesa (presidencial, senadores, diputados, parlamento andino). Requiere headers `Origin`, `Referer` y `sec-fetch-*` para evitar que el gateway devuelva HTML del SPA. Las cookies se obtienen vía Playwright bootstrap.
