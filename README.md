@@ -139,6 +139,33 @@ La coincidencia numérica — desaparecen ~58 votos esperados de la fila 33 y ap
 
 *Nota: el recorte mostrado excluye deliberadamente la sección del acta con nombres y DNI de los miembros de mesa.*
 
+## 📌 Caso de estudio 2: el desfase de 3.96x
+
+El hallazgo insignia del proyecto, replicado con datos propios e independientes de los de PRIME Institute.
+
+**El fenómeno:** el total nacional que publica ONPE y la suma mesa por mesa de sus propias actas no coinciden (lo esperable durante el escrutinio: hay actas aún no contabilizadas). Lo que **no** es esperable es cómo se reparte esa diferencia entre candidatos.
+
+**Números del detector `disproportionate_delta`** (18-abr-2026, 92,700 actas, ~93% de escrutinio):
+
+| Métrica — Juntos por el Perú (Sánchez) | Valor |
+|---|---|
+| Total nacional oficial | 1,880,266 |
+| Suma mesa a mesa (fuente propia) | 1,656,101 |
+| **Desfase** | **224,165 votos** |
+| Participación en el voto | ~11 % |
+| Participación en el desfase total | **43.1 %** |
+| **Ratio** | **3.96x** |
+| Ratio reportado por PRIME (fuente independiente) | 4.05x |
+
+Un desfase distribuido proporcionalmente da ratio ≈ 1.0 para todos (y así ocurre con el resto de candidatos grandes). Los demás ratios > 2x detectados corresponden todos a partidos pequeños (< 1.6 % del voto), donde el ruido estadístico pesa más.
+
+**Lecturas posibles, en orden de benignidad:**
+
+1. **Sesgo geográfico del conteo**: si las actas que faltan contabilizar se concentran en regiones donde Sánchez es fuerte (sur andino, zonas rurales de conteo lento), el desfase lo sobrerrepresentaría de forma transitoria. Verificable: el ratio debe converger a 1.0 al llegar el escrutinio a 100 %.
+2. Diferencias sistemáticas entre el agregador nacional y las actas individuales — requeriría explicación técnica de ONPE.
+
+**Este repositorio no concluye cuál.** Publica la metodología y el código para que cualquiera reproduzca el cálculo contra las fuentes públicas. Dos fuentes independientes (PRIME y este scraper) obtienen el mismo ratio, lo que descarta error de una de las fuentes; la pregunta pendiente es la serie temporal hacia el 100 % de escrutinio.
+
 ## Endpoint ONPE — breakthrough técnico
 
 El endpoint `GET /presentacion-backend/actas/buscar/mesa?codigoMesa=NNNNNN` (código padded a 6 dígitos como **string**, no integer) retorna JSON con todas las elecciones por mesa (presidencial, senadores, diputados, parlamento andino). Requiere headers `Origin`, `Referer` y `sec-fetch-*` para evitar que el gateway devuelva HTML del SPA. Las cookies se obtienen vía Playwright bootstrap.
